@@ -29,6 +29,12 @@ from requests import Request
 from pystac_client._utils import Modifiable, call_modifier
 from pystac_client.conformance import ConformanceClasses
 from pystac_client.stac_api_io import StacApiIO
+from pystac_client._utils_query import (
+    intersects_bbox,
+    intersects_datetime,
+    intersects_geometry,
+    intersects_query,
+)
 
 if TYPE_CHECKING:
     from pystac_client import client as _client
@@ -38,6 +44,18 @@ DATETIME_REGEX = re.compile(
     r"(?P<remainder>([Tt])\d{2}:\d{2}:\d{2}(\.\d+)?"
     r"(?P<tz_info>[Zz]|([-+])(\d{2}):(\d{2}))?)?)?)?$"
 )
+
+# these cannot be reordered or parsing will fail!
+OP_MAP = {
+    ">=": "gte",
+    "<=": "lte",
+    "=": "eq",
+    "<>": "neq",
+    ">": "gt",
+    "<": "lt",
+}
+
+OPS = list(OP_MAP.keys())
 
 
 class GeoInterface(Protocol):
@@ -78,18 +96,6 @@ SortbyLike = Union[Sortby, str, List[str]]
 
 Fields = Dict[str, List[str]]
 FieldsLike = Union[Fields, str, List[str]]
-
-# these cannot be reordered or parsing will fail!
-OP_MAP = {
-    ">=": "gte",
-    "<=": "lte",
-    "=": "eq",
-    "<>": "neq",
-    ">": "gt",
-    "<": "lt",
-}
-
-OPS = list(OP_MAP.keys())
 
 # Previously named DEFAULT_LIMIT_AND_MAX_ITEMS
 # aliased for backwards compat
@@ -132,7 +138,7 @@ def dict_merge(
     return dct
 
 
-class ItemSearch:
+class ItemSearchAPI:
     """Represents a deferred query to a STAC search endpoint as described in the
     `STAC API - Item Search spec
     <https://github.com/radiantearth/stac-api-spec/tree/master/item-search>`__.
@@ -858,3 +864,292 @@ class ItemSearch:
             DeprecationWarning,
         )
         return self.item_collection_as_dict()
+
+
+class ItemSearchStatic(ItemSearchAPI):
+    def __init__(
+        self,
+        *,
+        max_items: Optional[int] = None,
+        client: Optional["_client.Client"] = None,
+        limit: Optional[int] = DEFAULT_LIMIT_AND_MAX_ITEMS,
+        ids: Optional[IDsLike] = None,
+        collections: Optional[CollectionsLike] = None,
+        bbox: Optional[BBoxLike] = None,
+        intersects: Optional[IntersectsLike] = None,
+        datetime: Optional[DatetimeLike] = None,
+        query: Optional[QueryLike] = None,
+    ):
+        self.client = client
+
+        self._max_items = max_items
+        if self._max_items is not None and limit is not None:
+            limit = min(limit, self._max_items)
+
+        if limit is not None and (limit < 1 or limit > 10000):
+            raise Exception(f"Invalid limit of {limit}, must be between 1 and 10,000")
+
+        params = {
+            "limit": limit,
+            "bbox": self._format_bbox(bbox),
+            "datetime": self._format_datetime(datetime),
+            "ids": self._format_ids(ids),
+            "collections": self._format_collections(collections),
+            "intersects": self._format_intersects(intersects),
+            "query": self._format_query(query),
+        }
+
+        self._parameters: Dict[str, Any] = {
+            k: v for k, v in params.items() if v is not None
+        }
+
+    def get_parameters(self) -> Dict[str, Any]:
+        return self._parameters
+    
+    def _assert_conforms_to(self, item: Item) -> None:
+        raise NotImplementedError("This method is not implemented for static search")
+    
+    def _clean_params_for_get_request(self) -> Dict[str, Any]:
+        raise NotImplementedError("This method is not implemented for static search")
+    
+    def url_with_parameters(self) -> str:
+        raise NotImplementedError("This method is not implemented for static search")
+    
+    
+    def _format_filter(self, value: Optional[FilterLike]) -> Optional[FilterLike]:
+        if value is None:
+            return None
+
+        return value
+    
+    def _format_query(self, value: Optional[QueryLike]) -> Optional[Dict[str, Any]]:
+        if value is None:
+            return None
+
+        if isinstance(value, dict):
+            return value
+        elif isinstance(value, list):
+            query: Dict[str, Any] = {}
+            for q in value:
+                if isinstance(q, str):
+                    try:
+                        query = dict_merge(query, json.loads(q))
+                    except json.decoder.JSONDecodeError:
+                        for op in OPS:
+                            parts = q.split(op)
+                            if len(parts) == 2:
+                                param = parts[0]
+                                val: Union[str, float] = parts[1]
+                                if param == "gsd":
+                                    val = float(val)
+                                query = dict_merge(query, {parts[0]: {OP_MAP[op]: val}})
+                                break
+                else:
+                    raise Exception("Unsupported query format, must be a List[str].")
+        else:
+            raise Exception("Unsupported query format, must be a Dict or List[str].")
+
+        return query
+    
+    def _format_sortby(self, value: Optional[SortbyLike]) -> Optional[Sortby]:
+        if value is None:
+            return None
+
+        if isinstance(value, str):
+            return [self._sortby_part_to_dict(part) for part in value.split(",")]
+
+        if isinstance(value, list):
+            if value and isinstance(value[0], str):
+                return [self._sortby_part_to_dict(str(v)) for v in value]
+            elif value and isinstance(value[0], dict):
+                return value  # type: ignore
+
+        raise Exception(
+            "sortby must be of type None, str, List[str], or List[Dict[str, str]"
+        )
+    
+    def _format_fields(self, value: Optional[FieldsLike]) -> Optional[Fields]:
+        if value is None:
+            return None
+
+        if isinstance(value, str):
+            return self._fields_to_dict(value.split(","))
+        if isinstance(value, list):
+            return self._fields_to_dict(value)
+        if isinstance(value, dict):
+            return value
+
+        raise Exception(
+            "sortby must be of type None, str, List[str], or List[Dict[str, str]"
+        )
+        
+    @staticmethod
+    def _filter_client(client: "_client.Client", parameters: Dict[str, Any], max_items: Optional[int] = None) -> Iterable[ItemCollection]:
+        """Filter the search results
+
+        Args:
+            client (_client.Client): The client from which the search will be performed
+            parameters (Dict[str, Any]): The parameters to use for the search
+            max_items (Optional[int]): The maximum number of items to return
+
+        Returns:
+            Iterable[ItemCollection]: The filtered search results
+        """
+        nitems = 0
+        for collection in client.get_collections():
+            if parameters.get("collections") is not None:
+                if collection.id not in parameters["collections"]:
+                    continue
+            
+            # Check if the collection intersects search parameters
+            if collection.extent is not None:
+                if collection.extent.spatial is not None:
+                    if parameters.get("bbox") is not None:
+                        if not intersects_bbox(
+                            parameters["bbox"], collection.extent.spatial.bboxes[0]
+                        ):
+                            continue
+                if collection.extent.temporal is not None:
+                    if parameters.get("datetime") is not None:
+                        if not intersects_datetime(
+                            parameters["datetime"], collection.extent.temporal.intervals[0]
+                        ):
+                            continue
+                if collection.extent.extra_fields is not None:
+                    if parameters.get("query") is not None:
+                        if not intersects_query(
+                            parameters["query"], collection.extent.extra_fields
+                        ):
+                            continue
+            if collection.extra_fields is not None:
+                if parameters.get("query") is not None:
+                    if not intersects_query(parameters["query"], collection.extra_fields, type="soft"):
+                        continue
+                
+            items: List[Item] = []
+            for item in collection.get_items():
+                # Check datetime
+                if parameters.get("datetime") is not None:
+                    if not intersects_datetime(
+                        parameters["datetime"], item.datetime
+                    ):
+                        continue
+                
+                # Check bbox
+                if parameters.get("bbox") is not None:
+                    if not intersects_bbox(
+                        parameters["bbox"], item.bbox
+                    ):
+                        continue
+                
+                # Check intersects
+                if parameters.get("intersects") is not None:
+                    if not intersects_geometry(
+                        parameters["intersects"], item.geometry
+                    ):
+                        continue
+                
+                # Check query
+                if parameters.get("query") is not None:
+                    if not intersects_query(
+                        parameters["query"], item.properties, type="hard"
+                    ):
+                        continue
+                
+                new_item = item.clone()
+                for key in parameters.get("fields", []):
+                    if key not in new_item.properties:
+                        del new_item.properties[key]
+                
+                items.append(new_item)
+                nitems += 1
+                if (
+                    (max_items and nitems >= max_items) 
+                    or 
+                    (parameters.get("limit", None) and nitems >= parameters.get("limit"))
+                ):
+                    break
+            
+            if len(items) > 0:
+                yield ItemCollection(items=items)
+                
+        return
+
+    
+    @lru_cache(1)
+    def matched(self) -> Optional[int]:
+        """Return number matched for search
+
+        Returns the value from the `numberMatched` or `context.matched` field.
+        Not all APIs will support counts in which case a warning will be issued
+
+        Returns:
+            int: Total count of matched items. If counts are not supported `None`
+            is returned.
+        """
+        nitems = 0
+    
+        params = self.get_parameters().clone()
+        params.pop("limit", None)
+        prev_max_items = self._max_items
+        self._max_items = None
+        
+        for icollection in self._filter_client(self._client, params):
+            nitems += len(icollection.items())
+        
+        self._max_items = prev_max_items
+        return nitems
+    
+    # ------------------------------------------------------------------------
+    # Result sets
+    # ------------------------------------------------------------------------
+    def items_as_dicts(self) -> Iterator[Dict[str, Any]]:
+        """Iterator that yields :class:`dict` instances for each item matching
+        the given search parameters.
+
+        Yields:
+            Item : each Item matching the search criteria
+        """
+        for icollection in self._filter_client(self._client, self.get_parameters()):
+            for item in icollection:
+                yield item.to_dict()
+        
+        return
+    
+    # ------------------------------------------------------------------------
+    # By Page
+    def pages_as_dicts(self) -> Iterator[Dict[str, Any]]:
+        """Iterator that yields :class:`dict` instances for each page
+        of results from the search.
+
+        Yields:
+            Dict : a group of items matching the search
+            criteria as a feature-collection-like dictionary.
+        """
+        for icollection in self._filter_client(self._client, self.get_parameters()):
+            yield icollection.to_dict()
+        
+        return
+    
+    # ------------------------------------------------------------------------
+    # Everything
+    @lru_cache(1)
+    def item_collection_as_dict(self) -> Dict[str, Any]:
+        """
+        Get the matching items as an item-collection-like dict.
+
+        The dictionary will have two keys:
+
+        1. ``'type'`` with the value ``'FeatureCollection'``
+        2. ``'features'`` with the value being a list of dictionaries
+            for the matching items.
+
+        Return:
+            Dict : A GeoJSON FeatureCollection
+        """
+        items: List[Item] = []
+        for icollection in self._filter_client(self._client, self.get_parameters()):
+            for item in icollection:
+                items.append(item)
+        
+        return ItemCollection(items=items).to_dict()

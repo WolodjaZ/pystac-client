@@ -346,6 +346,131 @@ class Client(pystac.Catalog):
         sortby: Optional[SortbyLike] = None,
         fields: Optional[FieldsLike] = None,
     ) -> ItemSearch:
+        """_summary_
+
+        Args:
+            method (Optional[str], optional): _description_. Defaults to "POST".
+            max_items (Optional[int], optional): _description_. Defaults to None.
+            limit (Optional[int], optional): _description_. Defaults to DEFAULT_LIMIT_AND_MAX_ITEMS.
+            ids (Optional[IDsLike], optional): _description_. Defaults to None.
+            collections (Optional[CollectionsLike], optional): _description_. Defaults to None.
+            bbox (Optional[BBoxLike], optional): _description_. Defaults to None.
+            intersects (Optional[IntersectsLike], optional): _description_. Defaults to None.
+            datetime (Optional[DatetimeLike], optional): _description_. Defaults to None.
+            query (Optional[QueryLike], optional): _description_. Defaults to None.
+            filter (Optional[FilterLike], optional): _description_. Defaults to None.
+            filter_lang (Optional[FilterLangLike], optional): _description_. Defaults to None.
+            sortby (Optional[SortbyLike], optional): _description_. Defaults to None.
+            fields (Optional[FieldsLike], optional): _description_. Defaults to None.
+
+        Returns:
+            ItemSearch: _description_
+        """
+        if self._conforms_to(ConformanceClasses.ITEM_SEARCH):
+            item_search: ItemSearch = self.search_api(
+                method=method,
+                max_items=max_items,
+                limit=limit,
+                ids=ids,
+                collections=collections,
+                bbox=bbox,
+                intersects=intersects,
+                datetime=datetime,
+                query=query,
+                filter=filter,
+                filter_lang=filter_lang,
+                sortby=sortby,
+                fields=fields,
+            )
+        else:
+            item_search: ItemSearch = self.search_static(
+                max_items=max_items,
+                limit=limit,
+                ids=ids,
+                collections=collections,
+                bbox=bbox,
+                intersects=intersects,
+                datetime=datetime,
+                query=query,
+                fields=fields,
+            )
+        
+        return item_search
+
+
+    def search_static(
+        self,
+        *,
+        max_items: Optional[int] = None,
+        limit: Optional[int] = DEFAULT_LIMIT_AND_MAX_ITEMS,
+        ids: Optional[IDsLike] = None,
+        collections: Optional[CollectionsLike] = None,
+        bbox: Optional[BBoxLike] = None,
+        intersects: Optional[IntersectsLike] = None,
+        datetime: Optional[DatetimeLike] = None,
+        query: Optional[QueryLike] = None,
+        filter: Optional[FilterLike] = None,
+        filter_lang: Optional[FilterLangLike] = None,
+        sortby: Optional[SortbyLike] = None,
+        fields: Optional[FieldsLike] = None,
+    ) -> ItemSearch:
+        """_summary_
+
+        Args:
+            max_items (Optional[int], optional): _description_. Defaults to None.
+            limit (Optional[int], optional): _description_. Defaults to DEFAULT_LIMIT_AND_MAX_ITEMS.
+            ids (Optional[IDsLike], optional): _description_. Defaults to None.
+            collections (Optional[CollectionsLike], optional): _description_. Defaults to None.
+            bbox (Optional[BBoxLike], optional): _description_. Defaults to None.
+            intersects (Optional[IntersectsLike], optional): _description_. Defaults to None.
+            datetime (Optional[DatetimeLike], optional): _description_. Defaults to None.
+            query (Optional[QueryLike], optional): _description_. Defaults to None.
+            filter (Optional[FilterLike], optional): _description_. Defaults to None.
+            filter_lang (Optional[FilterLangLike], optional): _description_. Defaults to None.
+            sortby (Optional[SortbyLike], optional): _description_. Defaults to None.
+            fields (Optional[FieldsLike], optional): _description_. Defaults to None.
+
+        Returns:
+            ItemSearch: _description_
+        """
+        return ItemSearch(
+            url=None,
+            method=None,
+            max_items=max_items,
+            stac_io=self._stac_io,
+            client=self,
+            limit=limit,
+            ids=ids,
+            collections=collections,
+            bbox=bbox,
+            intersects=intersects,
+            datetime=datetime,
+            query=query,
+            filter=filter,
+            filter_lang=filter_lang,
+            sortby=sortby,
+            fields=fields,
+            modifier=self.modifier,
+        )
+    
+    
+    def search_api(
+        self,
+        *,
+        method: Optional[str] = "POST",
+        max_items: Optional[int] = None,
+        limit: Optional[int] = DEFAULT_LIMIT_AND_MAX_ITEMS,
+        ids: Optional[IDsLike] = None,
+        collections: Optional[CollectionsLike] = None,
+        bbox: Optional[BBoxLike] = None,
+        intersects: Optional[IntersectsLike] = None,
+        datetime: Optional[DatetimeLike] = None,
+        query: Optional[QueryLike] = None,
+        filter: Optional[FilterLike] = None,
+        filter_lang: Optional[FilterLangLike] = None,
+        sortby: Optional[SortbyLike] = None,
+        fields: Optional[FieldsLike] = None,
+    ) -> ItemSearch:
         """Query the ``/search`` endpoint using the given parameters.
 
         This method returns an :class:`~pystac_client.ItemSearch` instance. See that
